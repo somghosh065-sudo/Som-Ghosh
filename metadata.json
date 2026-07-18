@@ -1,0 +1,6 @@
+{
+  "name": "Tuition Classes",
+  "description": "A comprehensive app for Tuition Classes. Features student & admin roles, course management, PDF/video uploading, online MCQ exams, fees tracking, notices, live classes, offline access, and more.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
