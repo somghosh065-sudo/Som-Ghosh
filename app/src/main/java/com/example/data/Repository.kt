@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.content.Context
+import android.util.Log
 import androidx.room.Room
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -10,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
+import com.google.firebase.firestore.DocumentChange
 
 class TuitionRepository private constructor(private val context: Context) {
 
@@ -42,6 +44,10 @@ class TuitionRepository private constructor(private val context: Context) {
     init {
         CoroutineScope(Dispatchers.IO).launch {
             seedInitialData()
+            if (FirebaseService.isFirebaseAvailable) {
+                setupFirestoreRealtimeSync()
+                uploadLocalDataToFirestore()
+            }
         }
     }
 
@@ -71,6 +77,11 @@ class TuitionRepository private constructor(private val context: Context) {
                     progressPercent = 75
                 )
                 database.studentProfileDao().insertStudent(student)
+                
+                // Save to Firebase Firestore if available
+                if (FirebaseService.isFirebaseAvailable) {
+                    FirebaseService.firestore?.collection("students")?.document(student.id)?.set(student)
+                }
             }
             _currentUser.value = student
         }
@@ -80,12 +91,18 @@ class TuitionRepository private constructor(private val context: Context) {
     fun logout() {
         _isAdminLoggedIn.value = false
         _currentUser.value = null
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.auth?.signOut()
+        }
     }
 
     suspend fun updateStudentProfile(profile: StudentProfile) {
         database.studentProfileDao().updateStudent(profile)
         if (_currentUser.value?.id == profile.id) {
             _currentUser.value = profile
+        }
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("students")?.document(profile.id)?.set(profile)
         }
     }
 
@@ -101,70 +118,514 @@ class TuitionRepository private constructor(private val context: Context) {
     }
 
     // Courses
-    suspend fun addCourse(course: Course) = database.courseDao().insertCourse(course)
-    suspend fun deleteCourse(id: String) = database.courseDao().deleteCourse(id)
+    suspend fun addCourse(course: Course) {
+        database.courseDao().insertCourse(course)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("courses")?.document(course.id)?.set(course)
+        }
+    }
+
+    suspend fun deleteCourse(id: String) {
+        database.courseDao().deleteCourse(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("courses")?.document(id)?.delete()
+        }
+    }
 
     // Notes
-    suspend fun addNote(note: Note) = database.noteDao().insertNote(note)
-    suspend fun deleteNote(id: String) = database.noteDao().deleteNote(id)
+    suspend fun addNote(note: Note) {
+        database.noteDao().insertNote(note)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("notes")?.document(note.id)?.set(note)
+        }
+    }
+
+    suspend fun deleteNote(id: String) {
+        database.noteDao().deleteNote(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("notes")?.document(id)?.delete()
+        }
+    }
+
     suspend fun toggleDownloadNote(id: String, localPath: String): Boolean {
         val allNotes = database.noteDao().getAllNotes().first()
         val note = allNotes.find { it.id == id } ?: return false
-        database.noteDao().updateNote(note.copy(isDownloaded = true, localPath = localPath))
+        val updatedNote = note.copy(isDownloaded = true, localPath = localPath)
+        database.noteDao().updateNote(updatedNote)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("notes")?.document(id)?.set(updatedNote)
+        }
         return true
     }
 
     // Videos
-    suspend fun addVideo(video: Video) = database.videoDao().insertVideo(video)
-    suspend fun deleteVideo(id: String) = database.videoDao().deleteVideo(id)
+    suspend fun addVideo(video: Video) {
+        database.videoDao().insertVideo(video)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("videos")?.document(video.id)?.set(video)
+        }
+    }
+
+    suspend fun deleteVideo(id: String) {
+        database.videoDao().deleteVideo(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("videos")?.document(id)?.delete()
+        }
+    }
 
     // Live Classes
-    suspend fun addLiveClass(liveClass: LiveClass) = database.liveClassDao().insertLiveClass(liveClass)
-    suspend fun deleteLiveClass(id: String) = database.liveClassDao().deleteLiveClass(id)
+    suspend fun addLiveClass(liveClass: LiveClass) {
+        database.liveClassDao().insertLiveClass(liveClass)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("live_classes")?.document(liveClass.id)?.set(liveClass)
+        }
+    }
+
+    suspend fun deleteLiveClass(id: String) {
+        database.liveClassDao().deleteLiveClass(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("live_classes")?.document(id)?.delete()
+        }
+    }
 
     // Homeworks
-    suspend fun addHomework(homework: Homework) = database.homeworkDao().insertHomework(homework)
+    suspend fun addHomework(homework: Homework) {
+        database.homeworkDao().insertHomework(homework)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("homework")?.document(homework.id)?.set(homework)
+        }
+    }
+
     suspend fun submitHomework(homeworkId: String, submissionText: String) {
         val allHomework = database.homeworkDao().getAllHomework().first()
         val hw = allHomework.find { it.id == homeworkId } ?: return
-        database.homeworkDao().updateHomework(
-            hw.copy(
-                isSubmitted = true,
-                submissionText = submissionText
-            )
-        )
+        val updatedHw = hw.copy(isSubmitted = true, submissionText = submissionText)
+        database.homeworkDao().updateHomework(updatedHw)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("homework")?.document(homeworkId)?.set(updatedHw)
+        }
     }
+
     suspend fun gradeHomework(homeworkId: String, grade: String) {
         val allHomework = database.homeworkDao().getAllHomework().first()
         val hw = allHomework.find { it.id == homeworkId } ?: return
-        database.homeworkDao().updateHomework(hw.copy(grade = grade))
+        val updatedHw = hw.copy(grade = grade)
+        database.homeworkDao().updateHomework(updatedHw)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("homework")?.document(homeworkId)?.set(updatedHw)
+        }
     }
-    suspend fun deleteHomework(id: String) = database.homeworkDao().deleteHomework(id)
+
+    suspend fun deleteHomework(id: String) {
+        database.homeworkDao().deleteHomework(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("homework")?.document(id)?.delete()
+        }
+    }
 
     // MCQ Tests
-    suspend fun addMcqTest(test: McqTest) = database.mcqTestDao().insertMcqTest(test)
-    suspend fun submitTestResult(result: TestResult) = database.testResultDao().insertResult(result)
-    suspend fun deleteMcqTest(id: String) = database.mcqTestDao().deleteMcqTest(id)
+    suspend fun addMcqTest(test: McqTest) {
+        database.mcqTestDao().insertMcqTest(test)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("mcq_tests")?.document(test.id)?.set(test)
+        }
+    }
+
+    suspend fun submitTestResult(result: TestResult) {
+        database.testResultDao().insertResult(result)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("test_results")?.document(result.id)?.set(result)
+        }
+    }
+
+    suspend fun deleteMcqTest(id: String) {
+        database.mcqTestDao().deleteMcqTest(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("mcq_tests")?.document(id)?.delete()
+        }
+    }
 
     // Students Management
-    suspend fun addStudent(student: StudentProfile) = database.studentProfileDao().insertStudent(student)
-    suspend fun deleteStudent(id: String) = database.studentProfileDao().deleteStudent(id)
+    suspend fun addStudent(student: StudentProfile) {
+        database.studentProfileDao().insertStudent(student)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("students")?.document(student.id)?.set(student)
+        }
+    }
+
+    suspend fun deleteStudent(id: String) {
+        database.studentProfileDao().deleteStudent(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("students")?.document(id)?.delete()
+        }
+    }
+
     suspend fun recordFeesPayment(studentId: String, amount: Double) {
         val student = database.studentProfileDao().getStudentById(studentId) ?: return
         val newPaid = (student.feesPaid + amount).coerceAtMost(student.feesTotal)
-        database.studentProfileDao().updateStudent(student.copy(feesPaid = newPaid))
+        val updatedStudent = student.copy(feesPaid = newPaid)
+        database.studentProfileDao().updateStudent(updatedStudent)
         if (_currentUser.value?.id == studentId) {
-            _currentUser.value = student.copy(feesPaid = newPaid)
+            _currentUser.value = updatedStudent
+        }
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("students")?.document(studentId)?.set(updatedStudent)
         }
     }
 
     // Banners
-    suspend fun addBanner(banner: Banner) = database.bannerDao().insertBanner(banner)
-    suspend fun deleteBanner(id: String) = database.bannerDao().deleteBanner(id)
+    suspend fun addBanner(banner: Banner) {
+        database.bannerDao().insertBanner(banner)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("banners")?.document(banner.id)?.set(banner)
+        }
+    }
+
+    suspend fun deleteBanner(id: String) {
+        database.bannerDao().deleteBanner(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("banners")?.document(id)?.delete()
+        }
+    }
 
     // Notices
-    suspend fun addNotice(notice: Notice) = database.noticeDao().insertNotice(notice)
-    suspend fun deleteNotice(id: String) = database.noticeDao().deleteNotice(id)
+    suspend fun addNotice(notice: Notice) {
+        database.noticeDao().insertNotice(notice)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("notices")?.document(notice.id)?.set(notice)
+        }
+    }
+
+    suspend fun deleteNotice(id: String) {
+        database.noticeDao().deleteNotice(id)
+        if (FirebaseService.isFirebaseAvailable) {
+            FirebaseService.firestore?.collection("notices")?.document(id)?.delete()
+        }
+    }
+
+    // Real-time Cloud Synchronization
+    private fun setupFirestoreRealtimeSync() {
+        val db = FirebaseService.firestore ?: return
+
+        db.collection("courses").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val course = Course(
+                            id = doc.document.id,
+                            name = doc.document.getString("name") ?: "",
+                            description = doc.document.getString("description") ?: ""
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.courseDao().insertCourse(course)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.courseDao().deleteCourse(course.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("notices").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val notice = Notice(
+                            id = doc.document.id,
+                            title = doc.document.getString("title") ?: "",
+                            content = doc.document.getString("content") ?: "",
+                            date = doc.document.getString("date") ?: "",
+                            isImportant = doc.document.getBoolean("isImportant") ?: false
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.noticeDao().insertNotice(notice)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.noticeDao().deleteNotice(notice.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("banners").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val banner = Banner(
+                            id = doc.document.id,
+                            imageUrl = doc.document.getString("imageUrl") ?: "",
+                            title = doc.document.getString("title") ?: ""
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.bannerDao().insertBanner(banner)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.bannerDao().deleteBanner(banner.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("notes").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val note = Note(
+                            id = doc.document.id,
+                            title = doc.document.getString("title") ?: "",
+                            subject = doc.document.getString("subject") ?: "",
+                            classLevel = doc.document.getString("classLevel") ?: "",
+                            description = doc.document.getString("description") ?: "",
+                            fileUri = doc.document.getString("fileUri") ?: "",
+                            isDownloaded = doc.document.getBoolean("isDownloaded") ?: false,
+                            localPath = doc.document.getString("localPath") ?: "",
+                            timestamp = doc.document.getLong("timestamp") ?: System.currentTimeMillis()
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.noteDao().insertNote(note)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.noteDao().deleteNote(note.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("videos").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val video = Video(
+                            id = doc.document.id,
+                            title = doc.document.getString("title") ?: "",
+                            subject = doc.document.getString("subject") ?: "",
+                            classLevel = doc.document.getString("classLevel") ?: "",
+                            videoUrl = doc.document.getString("videoUrl") ?: "",
+                            isYoutube = doc.document.getBoolean("isYoutube") ?: true,
+                            description = doc.document.getString("description") ?: "",
+                            timestamp = doc.document.getLong("timestamp") ?: System.currentTimeMillis()
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.videoDao().insertVideo(video)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.videoDao().deleteVideo(video.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("live_classes").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val liveClass = LiveClass(
+                            id = doc.document.id,
+                            title = doc.document.getString("title") ?: "",
+                            subject = doc.document.getString("subject") ?: "",
+                            classLevel = doc.document.getString("classLevel") ?: "",
+                            joinUrl = doc.document.getString("joinUrl") ?: "",
+                            date = doc.document.getString("date") ?: "",
+                            time = doc.document.getString("time") ?: "",
+                            isCompleted = doc.document.getBoolean("isCompleted") ?: false
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.liveClassDao().insertLiveClass(liveClass)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.liveClassDao().deleteLiveClass(liveClass.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("homework").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val homework = Homework(
+                            id = doc.document.id,
+                            title = doc.document.getString("title") ?: "",
+                            subject = doc.document.getString("subject") ?: "",
+                            classLevel = doc.document.getString("classLevel") ?: "",
+                            description = doc.document.getString("description") ?: "",
+                            dueDate = doc.document.getString("dueDate") ?: "",
+                            submissionText = doc.document.getString("submissionText"),
+                            isSubmitted = doc.document.getBoolean("isSubmitted") ?: false,
+                            grade = doc.document.getString("grade")
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.homeworkDao().insertHomework(homework)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.homeworkDao().deleteHomework(homework.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("mcq_tests").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val test = McqTest(
+                            id = doc.document.id,
+                            title = doc.document.getString("title") ?: "",
+                            subject = doc.document.getString("subject") ?: "",
+                            classLevel = doc.document.getString("classLevel") ?: "",
+                            durationMinutes = doc.document.getLong("durationMinutes")?.toInt() ?: 15,
+                            questionsJson = doc.document.getString("questionsJson") ?: ""
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.mcqTestDao().insertMcqTest(test)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.mcqTestDao().deleteMcqTest(test.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("test_results").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val result = TestResult(
+                            id = doc.document.id,
+                            testId = doc.document.getString("testId") ?: "",
+                            testTitle = doc.document.getString("testTitle") ?: "",
+                            studentId = doc.document.getString("studentId") ?: "",
+                            studentName = doc.document.getString("studentName") ?: "",
+                            score = doc.document.getLong("score")?.toInt() ?: 0,
+                            total = doc.document.getLong("total")?.toInt() ?: 0,
+                            timestamp = doc.document.getLong("timestamp") ?: System.currentTimeMillis()
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.testResultDao().insertResult(result)
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                // No action needed or can delete result
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        db.collection("students").addSnapshotListener { snapshots, e ->
+            if (e != null) return@addSnapshotListener
+            snapshots?.let {
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (doc in it.documentChanges) {
+                        val student = StudentProfile(
+                            id = doc.document.id,
+                            name = doc.document.getString("name") ?: "",
+                            email = doc.document.getString("email") ?: "",
+                            phone = doc.document.getString("phone") ?: "",
+                            rollNo = doc.document.getString("rollNo") ?: "",
+                            classLevel = doc.document.getString("classLevel") ?: "Class 10",
+                            feesPaid = doc.document.getDouble("feesPaid") ?: 0.0,
+                            feesTotal = doc.document.getDouble("feesTotal") ?: 3000.0,
+                            progressPercent = doc.document.getLong("progressPercent")?.toInt() ?: 0,
+                            isBlocked = doc.document.getBoolean("isBlocked") ?: false
+                        )
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED,
+                            DocumentChange.Type.MODIFIED -> {
+                                database.studentProfileDao().insertStudent(student)
+                                if (_currentUser.value?.id == student.id) {
+                                    _currentUser.value = student
+                                }
+                            }
+                            DocumentChange.Type.REMOVED -> {
+                                database.studentProfileDao().deleteStudent(student.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun uploadLocalDataToFirestore() {
+        val db = FirebaseService.firestore ?: return
+        db.collection("courses").limit(1).get().addOnSuccessListener { querySnapshot ->
+            if (querySnapshot.isEmpty) {
+                Log.d("TuitionRepository", "Firestore is empty. Uploading seeded data...")
+                CoroutineScope(Dispatchers.IO).launch {
+                    val allCourses = database.courseDao().getAllCourses().first()
+                    allCourses.forEach { db.collection("courses").document(it.id).set(it) }
+
+                    val allNotices = database.noticeDao().getAllNotices().first()
+                    allNotices.forEach { db.collection("notices").document(it.id).set(it) }
+
+                    val allBanners = database.bannerDao().getAllBanners().first()
+                    allBanners.forEach { db.collection("banners").document(it.id).set(it) }
+
+                    val allNotes = database.noteDao().getAllNotes().first()
+                    allNotes.forEach { db.collection("notes").document(it.id).set(it) }
+
+                    val allVideos = database.videoDao().getAllVideos().first()
+                    allVideos.forEach { db.collection("videos").document(it.id).set(it) }
+
+                    val allLiveClasses = database.liveClassDao().getAllLiveClasses().first()
+                    allLiveClasses.forEach { db.collection("live_classes").document(it.id).set(it) }
+
+                    val allHomework = database.homeworkDao().getAllHomework().first()
+                    allHomework.forEach { db.collection("homework").document(it.id).set(it) }
+
+                    val allTests = database.mcqTestDao().getAllMcqTests().first()
+                    allTests.forEach { db.collection("mcq_tests").document(it.id).set(it) }
+
+                    val allStudents = database.studentProfileDao().getAllStudents().first()
+                    allStudents.forEach { db.collection("students").document(it.id).set(it) }
+                }
+            }
+        }
+    }
 
     // Private helpers
     private suspend fun seedInitialData() {
